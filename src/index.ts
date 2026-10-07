@@ -16,10 +16,10 @@ import path from "node:path";
 // ============================================================
 
 const config = {
-  baseUrl: process.env.LEARNHOUSE_URL || "http://localhost:3000",
+  baseUrl: process.env.LEARNHOUSE_URL || process.env.LEARNHOUSE_API_URL || "http://localhost:3000",
   email: process.env.LEARNHOUSE_EMAIL || "",
   password: process.env.LEARNHOUSE_PASSWORD || "",
-  accessToken: process.env.LEARNHOUSE_ACCESS_TOKEN || "",
+  accessToken: process.env.LEARNHOUSE_ACCESS_TOKEN || process.env.LEARNHOUSE_API_TOKEN || "",
   orgId: parseInt(process.env.LEARNHOUSE_ORG_ID || "1", 10),
   orgSlug: process.env.LEARNHOUSE_ORG_SLUG || "default",
 };
