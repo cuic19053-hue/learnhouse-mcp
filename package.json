@@ -1,0 +1,38 @@
+{
+  "name": "learnhouse-mcp-server",
+  "version": "1.0.3",
+  "description": "MCP Server for LearnHouse LMS - Manage courses, chapters, activities, and users",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "learnhouse-mcp-server": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "tsx src/test-api.ts",
+    "test:auth": "tsx src/tests/auth.test.ts",
+    "test:courses": "tsx src/tests/courses.test.ts",
+    "test:chapters": "tsx src/tests/chapters.test.ts",
+    "test:activities": "tsx src/tests/activities.test.ts",
+    "inspect": "npx fastmcp inspect src/index.ts"
+  },
+  "keywords": [
+    "mcp",
+    "learnhouse",
+    "lms",
+    "ai-agents"
+  ],
+  "author": "AgentOne",
+  "license": "MIT",
+  "dependencies": {
+    "fastmcp": "^3.29.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
