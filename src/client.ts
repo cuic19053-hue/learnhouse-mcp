@@ -30,6 +30,9 @@ import {
 export class LearnHouseClient {
   private config: LearnHouseConfig;
   private accessToken?: string;
+  private refreshToken?: string;
+  private accessExpiry?: number;
+  private refreshPromise?: Promise<string | undefined>;
 
   constructor(config: LearnHouseConfig) {
     this.config = {
@@ -65,8 +68,9 @@ export class LearnHouseClient {
 
     const headers: Record<string, string> = {};
     
-    if (this.accessToken) {
-      headers["Authorization"] = `Bearer ${this.accessToken}`;
+    const accessToken = await this.getValidAccessToken();
+    if (accessToken) {
+      headers["Authorization"] = "Bearer " + accessToken;
     }
 
     let body: string | FormData | undefined;
@@ -86,6 +90,7 @@ export class LearnHouseClient {
     });
 
     if (!response.ok) {
+      if (response.status === 401 && accessToken) this.clearSession(accessToken);
       const error = await response.json().catch(() => ({
         detail: `HTTP ${response.status}: ${response.statusText}`,
       })) as ApiError;
@@ -130,65 +135,82 @@ export class LearnHouseClient {
   // ============================================================
 
   /**
-   * Login with email/username and password, automatically solving click-in-order captcha if required
+   * 只接受用户完成点选验证后由平台签发的验证码令牌。
    */
-  async login(email: string, password: string): Promise<LoginResponse> {
-    let captchaToken: string | undefined;
-
-    try {
-      const captchaRes = await fetch(`${this.config.baseUrl}/api/v1/auth/captcha`, {
-        headers: { "User-Agent": "Mozilla/5.0" },
-      });
-      if (captchaRes.ok) {
-        const captchaData = await captchaRes.json() as { token: string; prompt: string[] };
-        const rawToken = captchaData.token;
-        const prompt = captchaData.prompt;
-
-        const fullDecoded = Buffer.from(rawToken, "base64").toString("utf-8");
-        const payloadStr = fullDecoded.split("|")[0];
-        const payload = JSON.parse(payloadStr) as { chars: Array<{ char: string; x: number; y: number }> };
-        const charMap = new Map(payload.chars.map((c) => [c.char, { x: c.x, y: c.y }]));
-        const clicks = prompt.map((p) => charMap.get(p)).filter(Boolean);
-
-        const verifyRes = await fetch(`${this.config.baseUrl}/api/v1/auth/captcha/verify`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" },
-          body: JSON.stringify({ token: rawToken, clicks }),
-        });
-        if (verifyRes.ok) {
-          const verifyData = await verifyRes.json() as { token: string };
-          captchaToken = verifyData.token;
-        }
-      }
-    } catch (err) {
-      console.error("[LearnHouse] Captcha auto-solve failed:", err);
+  async login(email: string, password: string, verifiedCaptchaToken?: string): Promise<LoginResponse> {
+    if (!verifiedCaptchaToken) {
+      throw new Error("请先完成人工点选验证码，再使用验证成功令牌登录");
     }
-
     const formData = new URLSearchParams();
     formData.set("username", email);
     formData.set("password", password);
-    if (captchaToken) {
-      formData.set("captcha_token", captchaToken);
-    }
+    formData.set("captcha_token", verifiedCaptchaToken);
 
-    const response = await fetch(`${this.config.baseUrl}/api/v1/auth/login`, {
+    const response = await fetch(this.config.baseUrl + "/api/v1/auth/login", {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": "Mozilla/5.0",
       },
       body: formData.toString(),
+      redirect: "error",
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: `HTTP ${response.status}: ${response.statusText}` })) as any;
-      const detailStr = typeof error.detail === "object" ? JSON.stringify(error.detail) : String(error.detail || "Login failed");
-      throw new Error(detailStr);
+      throw new Error("平台登录失败（HTTP " + response.status + "）");
     }
-
     const result = await response.json() as LoginResponse;
+    if (!result.tokens?.access_token || !result.tokens?.refresh_token) {
+      throw new Error("平台返回的登录会话不完整");
+    }
     this.accessToken = result.tokens.access_token;
+    this.refreshToken = result.tokens.refresh_token;
+    this.accessExpiry = result.tokens.expiry ?? undefined;
     return result;
+  }
+
+  /**
+   * 在用户会话到期前轮换令牌，并让并发请求共享同一次刷新。
+   */
+  async getValidAccessToken(): Promise<string | undefined> {
+    if (!this.accessToken || !this.refreshToken || !this.accessExpiry ||
+        Date.now() < this.accessExpiry - 60_000) {
+      return this.accessToken;
+    }
+    if (!this.refreshPromise) {
+      this.refreshPromise = this.refreshSession().finally(() => {
+        this.refreshPromise = undefined;
+      });
+    }
+    return this.refreshPromise;
+  }
+
+  private async refreshSession(): Promise<string | undefined> {
+    const refreshToken = this.refreshToken;
+    if (!refreshToken) return this.accessToken;
+    const response = await fetch(this.config.baseUrl + "/api/v1/auth/refresh", {
+      headers: { Cookie: "LH_refresh=" + refreshToken },
+      redirect: "error",
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (this.refreshToken !== refreshToken) return this.accessToken;
+    if (response.status === 401 || response.status === 403) {
+      this.clearSession();
+      return undefined;
+    }
+    if (!response.ok) throw new Error("平台会话刷新失败（HTTP " + response.status + "）");
+    const result = await response.json() as {
+      access_token?: string; refresh_token?: string; expiry?: number | null;
+    };
+    if (!result.access_token || !result.refresh_token) {
+      throw new Error("平台返回的刷新会话不完整");
+    }
+    if (this.refreshToken !== refreshToken) return this.accessToken;
+    this.accessToken = result.access_token;
+    this.refreshToken = result.refresh_token;
+    this.accessExpiry = result.expiry ?? undefined;
+    return this.accessToken;
   }
 
   /**
@@ -203,6 +225,15 @@ export class LearnHouseClient {
    */
   setAccessToken(token: string): void {
     this.accessToken = token;
+    this.refreshToken = undefined;
+    this.accessExpiry = undefined;
+  }
+
+  clearSession(expectedAccessToken?: string): void {
+    if (expectedAccessToken !== undefined && expectedAccessToken !== this.accessToken) return;
+    this.accessToken = undefined;
+    this.refreshToken = undefined;
+    this.accessExpiry = undefined;
   }
 
   /**

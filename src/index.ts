@@ -8,6 +8,8 @@
 import { FastMCP } from "fastmcp";
 import { z } from "zod";
 import { LearnHouseClient } from "./client.js";
+import { WebsiteApi } from "./website-api.js";
+import { CaptchaLogin } from "./captcha-login.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -21,27 +23,45 @@ const config = {
   password: process.env.LEARNHOUSE_PASSWORD || "",
   accessToken: process.env.LEARNHOUSE_ACCESS_TOKEN || process.env.LEARNHOUSE_API_TOKEN || "",
   orgId: parseInt(process.env.LEARNHOUSE_ORG_ID || "1", 10),
+  orgUuid: process.env.LEARNHOUSE_ORG_UUID || undefined,
   orgSlug: process.env.LEARNHOUSE_ORG_SLUG || "default",
 };
 
-// Singleton client instance
-let client: LearnHouseClient | null = null;
+// 用户会话只在本地进程中保留，缺失或失效时由用户完成人工点选验证码。
+const client = new LearnHouseClient({
+  baseUrl: config.baseUrl,
+  accessToken: config.accessToken || undefined,
+  orgId: config.orgId,
+  orgSlug: config.orgSlug,
+});
+const captchaLogin = new CaptchaLogin({
+  baseUrl: config.baseUrl,
+  username: config.email,
+  password: config.password,
+  client,
+});
 
 async function getClient(): Promise<LearnHouseClient> {
-  if (!client) {
-    client = new LearnHouseClient({
-      baseUrl: config.baseUrl,
-      accessToken: config.accessToken || undefined,
-      orgId: config.orgId,
-      orgSlug: config.orgSlug,
-    });
-    
-    if (!config.accessToken && config.email && config.password) {
-      await client.login(config.email, config.password);
-    }
+  if (await client.getValidAccessToken()) return client;
+  if (!config.email || !config.password) {
+    throw new Error("请配置 LEARNHOUSE_API_TOKEN，或配置账号密码后通过人工验证码登录");
   }
-  return client;
+  const url = await captchaLogin.start();
+  throw new Error("请在本机浏览器打开 " + url + "，完成人工点选验证码后重试。");
 }
+
+const websiteApi = new WebsiteApi({
+  baseUrl: config.baseUrl,
+  orgId: config.orgId,
+  orgUuid: config.orgUuid,
+  getAccessToken: async () => (await getClient()).getAccessToken(),
+  onUnauthorized: (token) => client.clearSession(token),
+  getOrganizationUuid: async (orgId) => {
+    if (orgId !== config.orgId) return undefined;
+    const org = await (await getClient()).getOrganizationBySlug(config.orgSlug);
+    return org.id === orgId ? org.org_uuid : undefined;
+  },
+});
 
 // ============================================================
 // MCP Server
@@ -49,7 +69,7 @@ async function getClient(): Promise<LearnHouseClient> {
 
 const server = new FastMCP({
   name: "LearnHouse MCP Server",
-  version: "1.0.0",
+  version: "1.2.0",
   instructions: `
 LearnHouse MCP Server provides tools to manage an LMS (Learning Management System).
 
@@ -60,6 +80,8 @@ Available capabilities:
 - **Content Creation**: Set TipTap document content for activities
 - **Progress Tracking**: Track user progress through courses
 - **Search**: Search across courses and content
+- **Website APIs**: Discover and call the current website API for question banks, exams, assignments, classes, learning reports, showcases, and other supported modules. First search, then inspect the selected operation before calling it. The website enforces the account permissions.
+- **Secure login**: If a user session is needed, call start_login and ask the user to complete the Chinese click captcha in the local browser; never try to solve it automatically.
 
 Organization ID: ${config.orgId}
 API URL: ${config.baseUrl}
@@ -71,7 +93,7 @@ server.addTool({
   description: "Ping the MCP server to verify it is running and identify version.",
   parameters: z.object({}),
   execute: async () => {
-    return "LearnHouse MCP Server is UP (Version 1.0.2 - Fixed PUT)";
+    return "LearnHouse MCP Server is UP (Version 1.2.0)";
   },
 });
 
@@ -579,6 +601,76 @@ server.addTool({
     const result = await api.importCoursesSync(analysis.temp_id, courseUuids);
     return JSON.stringify({ analysis, result }, null, 2);
   },
+});
+
+// ============================================================
+// 安全登录
+// ============================================================
+
+server.addTool({
+  name: "start_login",
+  description: "启动仅本机可访问的人工汉字验证码登录页面；用户在页面完成点选后，MCP 使用其真实用户会话。",
+  parameters: z.object({}),
+  execute: async () => {
+    if (await client.getValidAccessToken()) return JSON.stringify({ status: "authenticated" });
+    const url = await captchaLogin.start();
+    return JSON.stringify({ status: "waiting", url, message: "请在本机浏览器打开此地址，完成汉字点选后重试。" });
+  },
+});
+
+server.addTool({
+  name: "login_status",
+  description: "查看本机人工验证码登录是否完成，不返回账号凭据或会话令牌。",
+  parameters: z.object({}),
+  execute: async () => {
+    await client.getValidAccessToken();
+    return JSON.stringify(captchaLogin.status());
+  },
+});
+
+// ============================================================
+// 网站接口发现与调用
+// ============================================================
+
+server.addTool({
+  name: "website_api_search",
+  description: "搜索当前 LearnHouse 网站的接口，覆盖题库、考试、作业、班级、学情、作品等模块；按中文关键词或路由搜索，返回操作标识。认证和凭据管理接口不在通用工具中开放。",
+  parameters: z.object({
+    query: z.string().optional().describe("中文或英文关键词，例如题库、考试、作业、班级、学情、作品"),
+    method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional().describe("按 HTTP 方法筛选"),
+    page: z.number().int().min(1).optional().default(1).describe("结果页码"),
+    page_size: z.number().int().min(1).max(50).optional().default(20).describe("每页结果数量"),
+  }),
+  execute: async (args) => JSON.stringify(await websiteApi.search({
+    query: args.query, method: args.method, page: args.page, pageSize: args.page_size,
+  }), null, 2),
+});
+
+server.addTool({
+  name: "website_api_describe",
+  description: "查看网站接口的参数、请求格式和数据结构。调用网站接口前先用本工具核对必填字段和上传字段。",
+  parameters: z.object({
+    operation_id: z.string().min(1).describe("website_api_search 返回的操作标识"),
+  }),
+  execute: async (args) => JSON.stringify(await websiteApi.describe(args.operation_id), null, 2),
+});
+
+const websiteParameter = z.union([z.string(), z.number(), z.boolean()]);
+server.addTool({
+  name: "website_api_call",
+  description: "调用当前网站接口目录中的指定操作，使用现有平台账号及网站权限；支持 JSON、表单、本地文件上传和文件下载。先搜索并查看接口说明，写入操作会实际修改线上数据。",
+  parameters: z.object({
+    operation_id: z.string().min(1).describe("网站接口操作标识"),
+    path_params: z.record(websiteParameter).optional().describe("路径参数，字段名以接口说明为准"),
+    query: z.record(z.union([websiteParameter, z.array(websiteParameter)])).optional().describe("查询参数；网站所需组织信息优先使用显式值，否则使用当前组织"),
+    body: z.any().optional().describe("JSON 请求体或表单字段对象"),
+    files: z.record(z.union([z.string(), z.array(z.string())])).optional().describe("上传表单字段到本地绝对文件路径的映射"),
+    output_path: z.string().optional().describe("下载文件保存到本地的绝对路径；不覆盖已有文件"),
+  }),
+  execute: async (args) => JSON.stringify(await websiteApi.call({
+    operationId: args.operation_id, pathParams: args.path_params, query: args.query,
+    body: args.body, files: args.files, outputPath: args.output_path,
+  }), null, 2),
 });
 
 // ============================================================

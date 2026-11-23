@@ -28,7 +28,7 @@ The **Model Context Protocol (MCP)** is an open standard developed by Anthropic 
 
 ### What does this server do?
 
-The LearnHouse MCP Server exposes **21 tools** that allow AI agents to:
+The LearnHouse MCP Server exposes 30 dedicated tools plus website API discovery and calling tools that allow AI agents to:
 
 - **Manage Courses**: Create, read, update, delete courses
 - **Organize Chapters**: Structure course content into chapters
@@ -135,16 +135,20 @@ pnpm test
 
 ### Environment Variables
 
-| Variable              | Description                    | Default                 |
-| --------------------- | ------------------------------ | ----------------------- |
-| `LEARNHOUSE_URL`      | Base URL of LearnHouse API     | `http://localhost:3000` |
-| `LEARNHOUSE_EMAIL`    | Admin email for authentication | Required                |
-| `LEARNHOUSE_PASSWORD` | Admin password                 | Required                |
-| `LEARNHOUSE_ORG_ID`   | Organization ID                | `1`                     |
+| Variable | Description | Default |
+| --- | --- | --- |
+| LEARNHOUSE_URL / LEARNHOUSE_API_URL | Platform base URL; LEARNHOUSE_URL takes precedence | http://localhost:3000 |
+| LEARNHOUSE_API_TOKEN / LEARNHOUSE_ACCESS_TOKEN | Existing platform API token or user access token | Not set |
+| LEARNHOUSE_EMAIL / LEARNHOUSE_PASSWORD | Username or email and password when no token is configured | Not set |
+| LEARNHOUSE_ORG_ID | Default organization ID | 1 |
+| LEARNHOUSE_ORG_UUID | Optional UUID for the default organization | Automatically looked up when permitted |
+| LEARNHOUSE_ORG_SLUG | Slug used for default-organization lookup | default |
+
+Do not commit real passwords or tokens. The website enforces the configured account's permissions. Some operations require a real user session and reject API tokens.
 
 ### VS Code Configuration
 
-The MCP server is configured in `.vscode/mcp.json`:
+An example MCP configuration for VS Code is shown below:
 
 ```json
 {
@@ -162,6 +166,36 @@ The MCP server is configured in `.vscode/mcp.json`:
   }
 }
 ```
+
+---
+
+## 安全登录与会话
+
+使用账号密码连接时，MCP 不再读取或自动求解验证码答案。首次需要真实用户会话时调用 start_login，并在本机浏览器打开返回的地址，按照图片提示手动点选汉字；完成后可调用 login_status 查看状态，再重试原任务。若直接调用业务工具，未登录时也会返回同一登录地址。
+
+登录页面只监听本机回环地址，链接有随机标识和时效；密码、验证码令牌和登录令牌不会显示在页面或工具结果中。登录成功后，会话仅保存在当前 MCP 进程内，访问令牌将按平台规则自动刷新；进程重启后需要重新点选。仅使用允许 API Token 的接口时，也可配置 LEARNHOUSE_API_TOKEN 或 LEARNHOUSE_ACCESS_TOKEN，无需账号密码登录；作业、班级管理、正式比赛等需遵循网站的真实用户会话限制。
+
+独立脚本如使用账号密码，应由人工完成验证码后，通过受保护的环境变量 LEARNHOUSE_VERIFIED_CAPTCHA_TOKEN 提供验证成功令牌；不要将真实凭据或令牌写入仓库或聊天。
+
+---
+
+## 网站接口对齐
+
+当前 MCP 按已配置的网站地址读取实时 OpenAPI 接口目录，保留原有课程工具，并提供三个通用工具：
+
+1. website_api_search：按“题库、考试、作业、班级、学情、作品”等关键词查找接口，也可按 HTTP 方法筛选。
+2. website_api_describe：查看选中操作的路径、参数、请求体和相关数据结构。
+3. website_api_call：调用该操作，支持 JSON、表单、本地文件上传和文件下载。
+
+例如，先搜索“题库”，找到列出本地题目的操作，再查看其参数并调用。当前线上版本的操作标识可由搜索结果获取，无需手写；网站更新接口后，目录缓存最多保留五分钟，加载失败时使用已缓存的目录。
+
+网站的部分接口在 OpenAPI 文档中漏写了组织参数。MCP 对题库、考试、作业、作品、智能实验室和任务管理等相关接口补充 org_id，必要时尝试按当前组织 slug 查找 org_uuid。显式传入的组织参数优先；切换到其他组织时，请明确提供对应 org_uuid。若 API Token 无权读取组织信息，可配置 LEARNHOUSE_ORG_UUID，或在请求中提供 org_uuid。
+
+通用调用仅访问配置网站的已声明 API，不跟随重定向；登录、密码、API Token 管理、单点登录票据和内部密钥接口不通过此工具暴露。实际数据访问和写入仍受网站权限控制，作业、班级管理、正式比赛等有各自的真实用户会话限制，不会绕过。
+
+请求支持 application/json、multipart/form-data 和 application/x-www-form-urlencoded。files 将表单字段映射到本机绝对文件路径；下载时通过 output_path 指定新的绝对文件路径，不覆盖已有文件。单文件上传和下载上限为 50 MB，普通返回内容上限为 5 MB；实时事件流暂不支持，可改查普通结果接口。网站没有提供接口的纯界面操作仍需要使用网页。
+
+运行回归测试：npm run test:website。
 
 ---
 

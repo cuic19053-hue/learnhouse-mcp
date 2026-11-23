@@ -13,10 +13,12 @@ async function main() {
   const client = new LearnHouseClient({
     baseUrl: config.baseUrl,
     orgId: config.orgId,
+    accessToken: process.env.LEARNHOUSE_ACCESS_TOKEN || process.env.LEARNHOUSE_API_TOKEN || undefined,
   });
 
-  console.log("Logging in...");
-  await client.login(config.email, config.password);
+  if (!client.getAccessToken()) {
+    await client.login(config.email, config.password, process.env.LEARNHOUSE_VERIFIED_CAPTCHA_TOKEN);
+  }
 
   // 1. Upload Thumbnail to Mastering MCP
   const courseUuid = "course_d6d76f09-c553-4f82-ab81-82a1c69fdd5f";

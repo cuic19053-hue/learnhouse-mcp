@@ -10,6 +10,8 @@ const BASE_URL = process.env.LEARNHOUSE_URL || "http://localhost:3000";
 const ORG_ID = parseInt(process.env.LEARNHOUSE_ORG_ID || "1");
 const EMAIL = process.env.LEARNHOUSE_EMAIL || "admin@ai-automate.me";
 const PASSWORD = process.env.LEARNHOUSE_PASSWORD || "";
+const ACCESS_TOKEN = process.env.LEARNHOUSE_ACCESS_TOKEN || process.env.LEARNHOUSE_API_TOKEN || "";
+const VERIFIED_CAPTCHA = process.env.LEARNHOUSE_VERIFIED_CAPTCHA_TOKEN || "";
 
 async function runTests() {
   console.log("🧪 LearnHouse API Client Tests\n");
@@ -20,6 +22,7 @@ async function runTests() {
   const client = new LearnHouseClient({
     baseUrl: BASE_URL,
     orgId: ORG_ID,
+    accessToken: ACCESS_TOKEN || undefined,
   });
 
   let passed = 0;
@@ -45,16 +48,17 @@ async function runTests() {
     if (!result.status) throw new Error("No status in response");
   });
 
-  if (!PASSWORD) {
-    console.log("\n⚠️  Set LEARNHOUSE_PASSWORD to run authenticated tests\n");
+  if (!ACCESS_TOKEN && (!PASSWORD || !VERIFIED_CAPTCHA)) {
+    console.log("请配置 API Token，或提供人工验证通过的验证码令牌后再运行认证测试。");
     return;
   }
 
-  await test("Login with credentials", async () => {
-    const result = await client.login(EMAIL, PASSWORD);
-    if (!result.tokens.access_token) throw new Error("No access token");
-    if (!result.user.email) throw new Error("No user email");
-  });
+  if (!ACCESS_TOKEN) {
+    await test("Login with verified captcha", async () => {
+      const result = await client.login(EMAIL, PASSWORD, VERIFIED_CAPTCHA);
+      if (!result.tokens.access_token) throw new Error("No access token");
+    });
+  }
 
   await test("Get current user", async () => {
     const user = await client.getCurrentUser();

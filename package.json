@@ -1,6 +1,6 @@
 {
   "name": "learnhouse-mcp-server",
-  "version": "1.0.3",
+  "version": "1.2.0",
   "description": "MCP Server for LearnHouse LMS - Manage courses, chapters, activities, and users",
   "type": "module",
   "main": "dist/index.js",
@@ -16,6 +16,7 @@
     "test:courses": "tsx src/tests/courses.test.ts",
     "test:chapters": "tsx src/tests/chapters.test.ts",
     "test:activities": "tsx src/tests/activities.test.ts",
+    "test:website": "node --import tsx --test src/tests/website-api.test.ts",
     "inspect": "npx fastmcp inspect src/index.ts"
   },
   "keywords": [
